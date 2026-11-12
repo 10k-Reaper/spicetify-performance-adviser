@@ -1,26 +1,37 @@
 // perf-adviser.js - in-app performance adviser for this Spotify + Spicetify setup.
 //
 // What it does
-//   - injects three measured, individually switchable fixes:
+//   - injects two measured, individually switchable fixes (the recommended set):
 //       1. removes the sticky-header backdrop blur (opaque theme background)
 //       2. hides the Home card play button only while scrolling (its tooltip
 //          is repositioned on every scroll frame)
-//       3. pauses the decorative rotating cover art, which Chromium runs on the
-//          main thread because the same element also carries clip-path
+//   - one opt-in override for a rotating .cover-art animation. The rotation is
+//     normally added by a snippet/theme the user installed, so the panel first
+//     names that source and suggests disabling it; pausing it here is only a
+//     fallback for people who want to keep the effect.
 //   - one optional cosmetic bundle (marketplace card border, active-button
 //     colour, 72 px player bar) - not a performance fix, off by default
-//   - scans the live environment (Marketplace extensions/snippets, theme,
-//     header blur, page zoom, CSS-editor leftovers, running animations)
+//   - runtime CSS patches: Chromium treats every live :has() rule as a
+//     document-wide invalidation source, so one tooltip opening can restyle
+//     thousands of elements. The patch engine mirrors the two global :has()
+//     anchors installed by track-peek and parks :has() rules that currently
+//     match nothing, restoring each one as soon as its target appears.
+//   - scans the live environment generically: installed Marketplace
+//     extensions/snippets/theme, every CSS source (rule counts, :has(), blur,
+//     infinite animations), running animations and their source, header blur,
+//     page zoom and CSS-editor leftovers. No name has to be on a list.
 //   - runs the same scroll FPS test used by the offline harness, inside Spotify
-//   - lists measured offenders with the fps cost measured on this machine
 //   - includes the profiler that used to live in spx-perf.js: start recording,
-//     scroll, stop, and see cost attributed by extension/script
+//     scroll, stop, and see cost attributed by extension/script; the biggest
+//     non-Spotify sources then become findings automatically
 //
 // What it never does
 //   - it does not disable, uninstall or update any extension/snippet/theme
 //   - it makes no network requests
 //   - it does not touch Spotify's own files
-//   - it does not run timers, observers or animation frames while idle
+//   - it does not poll on a timer; the patch engine wakes on DOM mutations and
+//     only re-checks rules whose precondition was touched. The one timed retry is
+//     a short re-park loop that runs only while a revived rule is still live
 //
 // Kill switch: "Disable all fixes" in the panel (or "Remove applied fixes")
 // stops every injected rule. Fix state is stored in
@@ -46,7 +57,7 @@
 
   // 1. Sticky header surfaces: drop the per-frame backdrop blur and use an opaque,
   //    theme-coloured background so scrolling content does not show through.
-  //    Measured +5.8 fps on Home on top of the card fix (66.2 -> 72.0 median);
+  //    Measured +5.8 fps on Home on top of the card fix;
   //    on its own the gain is within noise (+1.5 fps).
   const HEADER_CSS = [
     "/* Perf Adviser fix 1: remove the sticky-header backdrop blur. */",
@@ -72,18 +83,20 @@
   //    repositions it on every scroll event. Hiding the button only while
   //    scrolling keeps it usable at rest and scoped to Home (Marketplace
   //    install/uninstall buttons use the same class and must not be touched).
-  //    Measured 27.7 -> 66.2 fps median (3 paired 8 s runs, pointer on a card
+  //    Measured +38.5 fps median (3 paired 8 s runs, pointer on a card
   //    play button so its tooltip is mounted).
   const CARDPLAY_CSS = [
     "/* Perf Adviser fix 2: hide the Home card play button only while scrolling. */",
     "html." + SCROLL_CLASS + " [data-testid=\"home-page\"] .main-card-PlayButtonContainer { display: none !important; }",
   ].join("\n");
 
-  // 3. Many themes/snippets put a slow full rotation on .cover-art. That element
-  //    also carries clip-path and border-radius, so Chromium cannot composite the
-  //    transform and runs it on the main thread every frame. The rotation is
-  //    decorative; pausing it keeps the circular crop. Measured 85.9 -> 123.0 fps
-  //    median on Home (3 paired 8 s runs).
+  // 3. OPT-IN override. Many themes/snippets put a slow full rotation on
+  //    .cover-art. That element also carries clip-path and border-radius, so
+  //    Chromium cannot composite the transform and runs it on the main thread
+  //    every frame. The rotation is decorative; removing the snippet/theme that
+  //    adds it is the clean fix, so this only runs when the user turns it on.
+  //    Pausing it keeps the circular crop; measured +37.1 fps median on
+  //    Home (3 paired 8 s runs) when the rotation was active.
   const COVER_CSS = [
     "/* Perf Adviser fix 3: pause the decorative rotating cover art. */",
     ".cover-art,",
@@ -107,58 +120,18 @@
     ".main-nowPlayingBar-nowPlayingBar:not(#a):not(#b) { height: 72px !important; }",
   ].join("\n");
 
-  // Costs measured on this machine and documented in REPORT.md.
-  const KNOWN = [
-    {
-      id: "sort-play",
-      re: /sort[-_ ]?play/i,
-      name: "Sort Play",
-      severity: "high",
-      impact: "Playlists: 4.5 -> 14.8 fps when disabled (3.3x). 3.7 MB script, ~10,600 listeners.",
-      action: "Keep it disabled in Marketplace > Extensions.",
-    },
-    {
-      id: "quickqueue",
-      re: /quick[-_ ]?queue/i,
-      name: "Quick Queue",
-      severity: "medium",
-      impact: "Playlists: 19.0 -> 24.6 fps when also blocked. The largest remaining third-party cost.",
-      action: "If you rarely use the queue button, disable it in Marketplace > Extensions.",
-    },
-    {
-      id: "rotating-cover",
-      re: /rotating[-_ ]?cover/i,
-      name: "Rotating Cover Art",
-      severity: "low",
-      impact: "Part of a group measured at -3.0 fps Home / -2.3 fps playlist when re-enabled.",
-      action: "Optional: disable in Marketplace > Snippets.",
-    },
-    {
-      id: "pill-player",
-      re: /pill[-_ ]?player/i,
-      name: "Pill Player and Rounded UI",
-      severity: "low",
-      impact: "Part of a group measured at -3.0 fps Home / -2.3 fps playlist when re-enabled.",
-      action: "Optional: disable in Marketplace > Snippets.",
-    },
-    {
-      id: "upcoming-song",
-      re: /upcoming[-_ ]?song/i,
-      name: "Upcoming Song",
-      severity: "low",
-      impact: "Part of a group measured at -3.0 fps Home / -2.3 fps playlist when re-enabled.",
-      action: "Optional: disable in Marketplace > Extensions.",
-    },
-  ];
-
   // ---------------------------------------------------------------- state
-  // Recommended defaults: the three fixes that measured a clear win.
+  // Recommended set: the two fixes that measured a clear win on their own.
+  // coverPause is opt-in because the rotation almost always comes from a
+  // snippet/theme the user installed - naming and removing the source is the
+  // honest fix, and the toggle exists for people who want to keep the look.
   // themeTweaks is cosmetic and stays off unless the user turns it on.
   const DEFAULTS = {
     headerFix: true,
     cardPlayFix: true,
-    coverPause: true,
+    coverPause: false,
     themeTweaks: false,
+    runtimePatch: true,
     cssOff: false,
   };
   function loadState() {
@@ -205,6 +178,403 @@
     document.documentElement.classList.remove(SCROLL_CLASS);
   }
   applyInjectedFixes();
+
+  // ------------------------------------------------------- runtime CSS patches
+  // Chromium's :has() invalidation is document-wide: while any live :has() rule
+  // exists, opening one tooltip can restyle thousands of elements. Two patches:
+  //
+  //   1. track-peek's stylesheet starts selectors with :has(), so they can
+  //      match any element in the document. Mirror those conditions with
+  //      classes we keep in sync, and drop the :has() from the selector.
+  //   2. Every other :has() rule that currently matches nothing is parked
+  //      (selector replaced with an inert one). It is restored as soon as
+  //      something it targets appears. Rules that are in use are never touched.
+  //
+  // Measured on the installed build (3 rounds): one top-bar hover costs
+  // 118-160 ms of style recalc over ~1,050-1,100 elements -> 83-93 ms over ~450
+  // (median 134 -> 90); restyles over 20 ms: 2 -> 0. A 4 s icon sweep:
+  // 563-649 ms and 9-10 big restyles -> 367-421 ms and 0. Card hover worst
+  // frame hit ~49 ms in 1 of 3 rounds without the patch; 7 ms in all 3 with it.
+  const PARK_PREFIX = "perf-adviser-parked-";
+  const PEEK_WRAP = "perf-adviser-peek-wrap";
+  const PEEK_ANCHOR = "perf-adviser-peek-anchor";
+  const PEEK_WRAP_SEL = ":has(> .track-peek)";
+  const PEEK_ANCHOR_SEL = ':has(> [data-testid="player-controls"] .track-peek)';
+
+  const runtime = {
+    parked: [],          // { rule, original, sentinel }
+    live: 0,
+    mirrored: 0,
+    precond: "",
+    seq: 0,
+    scans: 0,
+    revives: 0,
+    scanTimer: null,
+    reviveTimer: null,
+    deepTimer: null,
+    reparkTimer: null,
+    reparkTries: 0,
+    pending: [],
+    lastRevive: 0,
+    installed: false,
+    headObserver: null,
+    bodyObserver: null,
+  };
+
+  function patchesActive() {
+    return !!state.runtimePatch && !state.cssOff;
+  }
+
+  // Split a selector list on commas that are not inside (), [] or quotes.
+  function splitTopLevel(text) {
+    const out = [];
+    let depth = 0, quote = null, cur = "";
+    for (const ch of text) {
+      if (quote) { cur += ch; if (ch === quote) quote = null; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      if (ch === "," && depth === 0) { out.push(cur.trim()); cur = ""; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+
+  function forEachStyleRule(cb) {
+    for (const sheet of [...document.styleSheets]) {
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { continue; }
+      if (!rules) continue;
+      const walk = (list) => {
+        for (const rule of list) {
+          if (rule.cssRules) walk(rule.cssRules);   // @media, @supports, nesting
+          if (rule.selectorText) {
+            try { cb(rule); } catch (e) { /* ignore one bad rule */ }
+          }
+        }
+      };
+      walk(rules);
+    }
+  }
+
+  // 0 = matches nothing, >0 = in use, 1 = unknown (never park an unknown).
+  function matchesAny(selector) {
+    let n = 0;
+    for (const part of splitTopLevel(selector)) {
+      try { n += document.querySelectorAll(part).length; } catch (e) { return 1; }
+      if (n > 0) return n;
+    }
+    return n;
+  }
+
+  function mirrorPeekRules(on) {
+    let n = 0;
+    forEachStyleRule((rule) => {
+      const sel = rule.selectorText;
+      if (sel === PEEK_ANCHOR_SEL || (on && sel === "." + PEEK_ANCHOR)) {
+        rule.selectorText = on ? "." + PEEK_ANCHOR : PEEK_ANCHOR_SEL;
+        n++;
+      } else if (sel === PEEK_WRAP_SEL || (on && sel === "." + PEEK_WRAP)) {
+        rule.selectorText = on ? "." + PEEK_WRAP : PEEK_WRAP_SEL;
+        n++;
+      }
+    });
+    return n;
+  }
+
+  // Keep the mirror classes equal to what the original :has() rules would match.
+  function updatePeekMirrors(on) {
+    if (!on) {
+      for (const el of document.querySelectorAll("." + PEEK_WRAP)) el.classList.remove(PEEK_WRAP);
+      for (const el of document.querySelectorAll("." + PEEK_ANCHOR)) el.classList.remove(PEEK_ANCHOR);
+      return;
+    }
+    for (const peek of document.querySelectorAll(".track-peek")) {
+      const wrap = peek.parentElement;
+      if (wrap) wrap.classList.add(PEEK_WRAP);
+      const controls = peek.closest('[data-testid="player-controls"]');
+      if (controls && controls.parentElement) controls.parentElement.classList.add(PEEK_ANCHOR);
+    }
+    for (const el of document.querySelectorAll("." + PEEK_WRAP)) {
+      if (!el.querySelector(":scope > .track-peek")) el.classList.remove(PEEK_WRAP);
+    }
+    for (const el of document.querySelectorAll("." + PEEK_ANCHOR)) {
+      if (!el.querySelector(':scope > [data-testid="player-controls"] .track-peek')) el.classList.remove(PEEK_ANCHOR);
+    }
+  }
+
+  // Last compound of a relative selector: the part that appears or disappears.
+  // Used only as a cheap mutation filter, never as the real match test.
+  function lastCompound(rel) {
+    let depth = 0, quote = null, cur = "", last = "";
+    for (const ch of rel) {
+      if (quote) { cur += ch; if (ch === quote) quote = null; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+      if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      const combinator = depth === 0 && (ch === " " || ch === ">" || ch === "+" || ch === "~" || ch === "\n" || ch === "\t");
+      if (combinator) { if (cur.trim()) { last = cur.trim(); cur = ""; } continue; }
+      cur += ch;
+    }
+    if (cur.trim()) last = cur.trim();
+    return last;
+  }
+
+  function preconditionsFor(selector) {
+    const out = [];
+    let i = 0;
+    while ((i = selector.indexOf(":has(", i)) >= 0) {
+      let depth = 0, quote = null, j = i + 5;
+      for (; j < selector.length; j++) {
+        const ch = selector[j];
+        if (quote) { if (ch === quote) quote = null; continue; }
+        if (ch === '"' || ch === "'") { quote = ch; continue; }
+        if (ch === "(") depth++;
+        else if (ch === ")") { if (depth === 0) break; depth--; }
+      }
+      const inner = selector.slice(i + 5, j);
+      for (const rel of splitTopLevel(inner)) {
+        const c = lastCompound(rel);
+        if (c && c !== "*" && !c.includes(":has(")) out.push(c);
+      }
+      i = j + 1;
+    }
+    return out;
+  }
+
+  function rebuildPreconditions() {
+    const set = new Set([".track-peek"]);
+    for (const p of runtime.parked) {
+      const list = preconditionsFor(p.original);
+      p.precond = list.join(",");
+      for (const c of list) set.add(c);
+    }
+    runtime.precond = [...set].join(",");
+  }
+
+  // Does any mutation in this batch touch a node that could satisfy `selector`?
+  // Used to skip the full match test for rules whose precondition is unrelated.
+  function nodesTouch(records, selector) {
+    if (!selector) return true;
+    for (const rec of records) {
+      if (rec.type === "attributes") {
+        if (safeMatches(rec.target, selector)) return true;
+        continue;
+      }
+      for (const node of rec.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (safeMatches(node, selector) || safeQuery(node, selector)) return true;
+      }
+    }
+    return false;
+  }
+
+  function reviveMatching(records) {
+    runtime.lastRevive = performance.now();
+    let changed = false;
+    const filter = records && records.length ? records : null;
+    for (const p of runtime.parked) {
+      if (!p.rule || !p.rule.parentStyleSheet) continue;
+      if (p.rule.selectorText !== p.sentinel) continue;
+      if (filter && p.precond && !nodesTouch(filter, p.precond)) continue;
+      if (matchesAny(p.original) > 0) {
+        try { p.rule.selectorText = p.original; changed = true; } catch (e) { /* ignore */ }
+      }
+    }
+    if (changed) {
+      runtime.reparkTries = 0;
+      runtime.revives++;
+      rebuildPreconditions();
+      // The target is visible now; check again later so a rule can be parked
+      // again after its dialog/menu closes.
+      scheduleScan(1500);
+      if (!runtime.deepTimer) {
+        runtime.deepTimer = setTimeout(() => {
+          runtime.deepTimer = null;
+          fullScan();
+        }, 6000);
+      }
+    }
+  }
+
+  function scheduleRevive(ms, records) {
+    if (records) {
+      for (const r of records) {
+        runtime.pending.push(r);
+        if (runtime.pending.length > 400) runtime.pending.shift();
+      }
+    }
+    if (runtime.reviveTimer) return;
+    const wait = Math.max(ms, 800 - (performance.now() - runtime.lastRevive));
+    runtime.reviveTimer = setTimeout(() => {
+      runtime.reviveTimer = null;
+      if (!patchesActive()) { runtime.pending = []; return; }
+      const recs = runtime.pending;
+      runtime.pending = [];
+      updatePeekMirrors(true);
+      reviveMatching(recs);
+    }, Math.max(0, wait));
+  }
+
+  function safeMatches(el, selector) {
+    if (!selector) return false;
+    try { return el.matches(selector); } catch (e) { return true; }
+  }
+
+  function safeQuery(el, selector) {
+    if (!selector) return false;
+    try { return !!el.querySelector(selector); } catch (e) { return true; }
+  }
+
+  // Parked rules that are currently restored because their target appeared.
+  function liveParkedCount() {
+    let n = 0;
+    for (const p of runtime.parked) {
+      try { if (p.rule && p.rule.parentStyleSheet && p.rule.selectorText === p.original) n++; } catch (e) { /* ignore */ }
+    }
+    return n;
+  }
+
+  function onPatchMutations(records) {
+    const pre = runtime.precond;
+    let flip = false;
+    for (const rec of records) {
+      if (rec.type === "attributes") {
+        if (rec.attributeName === "style") continue;
+        if (safeMatches(rec.target, pre)) { flip = true; break; }
+      } else {
+        for (const node of rec.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (safeMatches(node, pre) || (node.firstElementChild && safeQuery(node, pre))) { flip = true; break; }
+        }
+      }
+      if (flip) break;
+    }
+    const peekTouched = !!document.querySelector(".track-peek, ." + PEEK_WRAP + ", ." + PEEK_ANCHOR);
+    // A new track-peek must get its mirror class before the next frame, not
+    // after the revive timer, or the pill renders unstyled for a moment.
+    if (peekTouched) updatePeekMirrors(true);
+    if (flip || peekTouched) scheduleRevive(150, records);
+    // Keep trying to park revived rules again (dialog/menu closed) without
+    // waiting for a mutation-free window that this app never has.
+    if (liveParkedCount() > 0) scheduleRepark(1200);
+  }
+
+  function scheduleScan(ms) {
+    if (runtime.scanTimer) clearTimeout(runtime.scanTimer);
+    runtime.scanTimer = setTimeout(() => {
+      runtime.scanTimer = null;
+      fullScan();
+    }, ms);
+  }
+
+  // Retry parking on a fixed cadence. Spotify mutates the DOM every second or
+  // so, so a debounced scan would never run; this one is not reset by mutations
+  // and keeps retrying until nothing revived is left live.
+  function scheduleRepark(ms) {
+    if (runtime.reparkTimer) return;
+    if (runtime.reparkTries >= 6) return;
+    runtime.reparkTimer = setTimeout(() => {
+      runtime.reparkTimer = null;
+      if (!patchesActive()) return;
+      runtime.reparkTries++;
+      fullScan();
+      if (liveParkedCount() > 0) scheduleRepark(1500);
+      else runtime.reparkTries = 0;
+    }, ms);
+  }
+
+  function fullScan() {
+    if (!patchesActive()) return;
+    runtime.scans++;
+    mirrorPeekRules(true);
+    updatePeekMirrors(true);
+
+    runtime.parked = runtime.parked.filter((p) => p.rule && p.rule.parentStyleSheet);
+
+    // Re-check rules we already know about: park them again when their target
+    // goes away, restore them when it comes back.
+    for (const p of runtime.parked) {
+      let sel = "";
+      try { sel = p.rule.selectorText; } catch (e) { continue; }
+      if (sel === p.sentinel) {
+        if (matchesAny(p.original) > 0) {
+          try { p.rule.selectorText = p.original; } catch (e) { /* ignore */ }
+        }
+      } else if (sel === p.original) {
+        if (matchesAny(p.original) === 0) {
+          try { p.rule.selectorText = p.sentinel; } catch (e) { /* ignore */ }
+        }
+      }
+    }
+
+    const tracked = new Set(runtime.parked.map((p) => p.rule));
+    let live = 0;
+    forEachStyleRule((rule) => {
+      const sel = rule.selectorText;
+      if (!sel.includes(":has(")) return;
+      if (tracked.has(rule)) return;
+      if (sel === "." + PEEK_ANCHOR || sel === "." + PEEK_WRAP) return;
+      if (sel.startsWith(PARK_PREFIX)) return;
+      if (matchesAny(sel) > 0) { live++; return; }
+      const original = sel;
+      const sentinel = PARK_PREFIX + (++runtime.seq);
+      try { rule.selectorText = sentinel; } catch (e) { return; }
+      runtime.parked.push({ rule, original, sentinel, precond: preconditionsFor(original).join(",") });
+    });
+
+    runtime.live = live + runtime.parked.filter((p) => {
+      try { return p.rule.selectorText === p.original; } catch (e) { return false; }
+    }).length;
+    runtime.mirrored = document.querySelectorAll("." + PEEK_ANCHOR + ", ." + PEEK_WRAP).length;
+    rebuildPreconditions();
+  }
+
+  function installPatchObservers() {
+    if (runtime.installed) return;
+    runtime.installed = true;
+    try {
+      runtime.headObserver = new MutationObserver(() => scheduleScan(500));
+      runtime.headObserver.observe(document.head || document.documentElement, { childList: true, subtree: true, characterData: true });
+    } catch (e) { /* ignore */ }
+    try {
+      runtime.bodyObserver = new MutationObserver(onPatchMutations);
+      runtime.bodyObserver.observe(document.body, { childList: true, subtree: true, attributes: true });
+    } catch (e) { /* ignore */ }
+    try {
+      document.addEventListener("focusin", () => scheduleRevive(200), true);
+      window.addEventListener("popstate", () => scheduleScan(600));
+    } catch (e) { /* ignore */ }
+    try {
+      if (Spicetify.Platform && Spicetify.Platform.History && Spicetify.Platform.History.listen) {
+        Spicetify.Platform.History.listen(() => scheduleScan(700));
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  function syncRuntimePatches() {
+    if (!patchesActive()) {
+      if (runtime.reparkTimer) { clearTimeout(runtime.reparkTimer); runtime.reparkTimer = null; }
+      for (const p of runtime.parked) {
+        try { p.rule.selectorText = p.original; } catch (e) { /* ignore */ }
+      }
+      runtime.parked = [];
+      runtime.live = 0;
+      runtime.mirrored = 0;
+      mirrorPeekRules(false);
+      updatePeekMirrors(false);
+      rebuildPreconditions();
+      return;
+    }
+    installPatchObservers();
+    fullScan();
+  }
+  syncRuntimePatches();
+  // Stylesheets are injected by Marketplace after this file runs; a couple of
+  // delayed scans pick them up without polling.
+  setTimeout(() => scheduleScan(0), 1500);
+  setTimeout(() => scheduleScan(0), 5000);
 
   // Scroll-scoped card play button: one class toggle at the start and end of a
   // scroll, instead of the tooltip's ~1500 inline-style writes per 4 s.
@@ -709,17 +1079,128 @@
     return String(raw).length;
   }
 
-  // Is a rotating-cover animation present at all? animationName stays readable
-  // when we have paused it, so this reports the snippet, not our fix.
-  function rotatingCoverPresent() {
+  // The rotation can be added by a snippet, the theme or an extension. The
+  // animation name stays readable even when our opt-in CSS has paused it, so it
+  // identifies the source, not our fix.
+  function coverAnimationName() {
     const el = document.querySelector(".cover-art");
-    if (!el) return false;
+    if (!el) return "";
     const name = getComputedStyle(el).animationName;
-    return !!name && name !== "none" && /rotating/i.test(name);
+    return name && name !== "none" && /rotat|spin/i.test(name) ? name : "";
+  }
+
+  // Marketplace packs every snippet into one <style class="marketplaceSnippets">
+  // and prefixes each block with "/* Title - description */". Splitting on those
+  // comments gives per-snippet CSS without relying on names or a fixed list.
+  function snippetSources() {
+    const out = [];
+    const el = document.querySelector("style.marketplaceSnippets");
+    const txt = (el && el.textContent) || "";
+    if (!txt) return out;
+    const marks = [...txt.matchAll(/\/\*\s*([\s\S]*?)\s*\*\//g)].filter((m) => /\s-\s/.test(m[1]));
+    for (let i = 0; i < marks.length; i++) {
+      const head = marks[i][1];
+      const name = (head.split(" - ")[0] || head).trim();
+      const start = marks[i].index + marks[i][0].length;
+      const end = i + 1 < marks.length ? marks[i + 1].index : txt.length;
+      out.push({ kind: "snippet", name, code: txt.slice(start, end) });
+    }
+    return out;
+  }
+
+  // Theme CSS is either a <style class="marketplaceCSS marketplaceUserCSS"> or a
+  // <link href="user.css">. Broken rules in a stylesheet make cssRules throw, so
+  // both paths are guarded.
+  function themeSources() {
+    const st = document.querySelector("style.marketplaceCSS.marketplaceUserCSS");
+    if (st && st.textContent) return [{ kind: "theme", name: "Theme user.css", code: st.textContent }];
+    const link = document.querySelector("link[href='user.css'], link.userCSS");
+    if (!link) return [];
+    try {
+      const sheet = [...document.styleSheets].find((s) => s.ownerNode === link);
+      if (sheet && sheet.cssRules) {
+        return [{ kind: "theme", name: "Theme user.css", code: [...sheet.cssRules].map((r) => r.cssText).join("\n") }];
+      }
+    } catch (e) { /* ignore */ }
+    return [{ kind: "theme", name: "Theme user.css (not readable)", code: "" }];
+  }
+
+  // Count the signals that make a block of CSS expensive to keep valid during
+  // scrolling. These are counts, not measured fps: they say where to look.
+  function cssStats(code) {
+    const count = (re) => (String(code).match(re) || []).length;
+    return {
+      chars: String(code).length,
+      rules: count(/\{/g),
+      has: count(/:has\(/g),
+      blur: count(/backdrop-filter|filter\s*:[^;}]*blur/gi),
+      anim: count(/animation(-name)?\s*:/gi),
+      infinite: count(/\binfinite\b/gi),
+      sticky: count(/position\s*:\s*(sticky|fixed)/gi),
+      important: count(/!important/g),
+    };
+  }
+
+  function cssSources() {
+    const srcs = [...snippetSources(), ...themeSources()];
+    // Extension-injected <style> blocks (not ours, not the Marketplace's).
+    for (const el of document.querySelectorAll("style")) {
+      if (el.id === FIX_ID) continue;
+      if (el.classList.contains("marketplaceSnippets") || el.classList.contains("marketplaceCSS")) continue;
+      const code = el.textContent || "";
+      if (code.length < 120) continue;
+      const label = el.id ? "#" + el.id : "inline <style>";
+      srcs.push({ kind: "style", name: label, code });
+    }
+    const out = [];
+    for (const s of srcs) {
+      if (!s.code) continue;
+      const st = cssStats(s.code);
+      st.score = st.has * 3 + st.blur * 3 + st.infinite * 2 + st.anim + Math.round(st.rules / 200);
+      out.push({ kind: s.kind, name: s.name, code: s.code, ...st });
+    }
+    return out.sort((a, b) => b.score - a.score);
+  }
+
+  // Which source declares this animation? Exact name first, then a rotation rule
+  // aimed at the cover, so a minified name still resolves to its snippet.
+  function animationSource(name, sources) {
+    if (name) {
+      for (const s of sources) if (s.code && s.code.indexOf(name) >= 0) return s;
+    }
+    for (const s of sources) {
+      if (s.code && /animation[^;}]*rotate|rotate[^;}]*infinite/i.test(s.code) && /cover-art|coverArt/i.test(s.code)) return s;
+    }
+    return null;
+  }
+
+  // Infinite animations that are actually running (or paused by our override).
+  function infiniteAnimations() {
+    let list = [];
+    try { list = document.getAnimations ? document.getAnimations() : []; } catch (e) { list = []; }
+    const out = [];
+    const seen = new Set();
+    for (const a of list) {
+      let timing = null;
+      try { timing = (a.effect && a.effect.getTiming()) || null; } catch (e) { timing = null; }
+      if (!timing || timing.iterations !== Infinity) continue;
+      const t = a.effect && a.effect.target;
+      if (!t || t.id === FIX_ID) continue;
+      let nm = a.animationName || "";
+      if (!nm) { try { nm = getComputedStyle(t).animationName || ""; } catch (e) { nm = ""; } }
+      const cls = (t.className && String(t.className).trim().split(/\s+/).slice(0, 2).join(".")) || t.tagName.toLowerCase();
+      const key = nm + "@" + cls;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name: nm || "(unnamed)", target: t.tagName.toLowerCase() + (cls ? "." + cls : ""), state: a.playState });
+    }
+    return out;
   }
 
   async function scan() {
     const [market, zoom] = await Promise.all([readMarketplace(), readZoom()]);
+    const css = cssSources();
+    const coverName = coverAnimationName();
     return {
       market,
       zoom,
@@ -732,8 +1213,19 @@
       cardPlayFix: !!state.cardPlayFix,
       coverPause: !!state.coverPause,
       themeTweaks: !!state.themeTweaks,
-      coverRotating: rotatingCoverPresent(),
+      coverRotating: !!coverName,
+      coverName,
+      coverSource: coverName ? animationSource(coverName, css) : null,
+      css,
+      animations: infiniteAnimations(),
       cssOff: !!state.cssOff,
+      runtimePatch: !!state.runtimePatch,
+      runtime: {
+        active: patchesActive(),
+        parked: runtime.parked.length,
+        live: runtime.live,
+        mirrored: runtime.mirrored,
+      },
       scrollClassNow: document.documentElement.classList.contains(SCROLL_CLASS),
       cardPlayPresent: !!document.querySelector(".main-card-PlayButtonContainer"),
       profRunning: prof.recording,
@@ -871,13 +1363,13 @@
     return wrap;
   }
 
-  function buildRecommendations(s) {
+  function buildRecommendations(s, p) {
     const recs = [];
     if (s.headerBlur.length) {
       recs.push({
         severity: "high",
         title: "Sticky header blur is active",
-        body: "Measured +5.8 fps on Home on top of the card fix (66.2 -> 72.0 median). On its own the gain is within noise (+1.5 fps). " + s.headerBlur.length + " surface(s) currently carry backdrop-filter.",
+        body: "Measured +5.8 fps on Home on top of the card fix; on its own the gain is within noise (+1.5 fps). " + s.headerBlur.length + " surface(s) currently carry backdrop-filter.",
         action: "Turn on 'Sticky header blur' in One-click fixes. If it is already on, some other extension or snippet is re-adding the blur.",
       });
     }
@@ -901,37 +1393,78 @@
       recs.push({
         severity: "info",
         title: "Home FPS depends on where the mouse rests",
-        body: "With the cursor over a card, Spotify's play-button tooltip is repositioned on every scroll frame: 27.7 fps all-off vs 66.2 fps with the button hidden during scroll (paired, 3 rounds).",
+        body: "With the cursor over a card, Spotify's play-button tooltip is repositioned on every scroll frame. Hiding it while scrolling measured +38.5 fps median (paired, 3 rounds).",
         action: "Turn on 'Home card play button' below. It keeps the button usable at rest and only affects Home.",
       });
     }
-    if (s.coverRotating && !s.coverPause) {
+    const hasRules = (s.css || []).reduce((n, c) => n + (c.has || 0), 0);
+    if (!s.runtime || (s.runtime.active === false && hasRules >= 10)) {
       recs.push({
-        severity: "high",
-        title: "Rotating cover art is animating",
-        body: "A slow rotation on .cover-art is running on the main thread, because the same element carries clip-path and cannot be composited. Pausing it measured 85.9 -> 123.0 fps median on Home (3 paired 8 s runs).",
-        action: "Turn on 'Rotating cover art' below. It is decorative; the circular crop is kept.",
+        severity: "medium",
+        title: "Idle :has() CSS rules make every hover restyle the app",
+        body: "Chromium treats any live :has() rule as document-wide, even one that matches nothing. " + hasRules +
+          " :has() selectors are loaded; without the runtime patch, one top-bar tooltip costs 118-160 ms of style recalculation across ~1,050 elements and up to a ~49 ms frame.",
+        action: "Turn on 'Runtime CSS patches' below. It only parks rules that match nothing and restores each one when its target appears.",
+      });
+    }
+    if (s.coverRotating) {
+      const src = s.coverSource ? s.coverSource.name : "";
+      const kind = s.coverSource ? (s.coverSource.kind === "theme" ? "theme" : s.coverSource.kind === "style" ? "style block" : "snippet") : "";
+      const where = s.coverSource && s.coverSource.kind === "theme" ? "Marketplace > Themes" : "Marketplace > Snippets";
+      if (s.coverPause) {
+        recs.push({
+          severity: "info",
+          title: "Rotating cover art is paused by this extension",
+          body: (src ? "The " + kind + " \"" + src + "\" adds the rotation; the pause only overrides it. " : "") +
+            "Pausing the rotation measured +37.1 fps median on Home (3 paired 8 s runs).",
+          action: src ? "Cleaner: disable \"" + src + "\" in " + where + " and turn this toggle off." : "Keep this on only if you want the rotation gone and cannot find its source.",
+        });
+      } else {
+        recs.push({
+          severity: "medium",
+          title: src ? "Rotating cover art: source is " + src : "Rotating cover art is animating",
+          body: (src ? "The " + kind + " \"" + src + "\" animates .cover-art" : "An installed snippet or theme animates .cover-art") +
+            " with an infinite rotation. With it paused, Home gained +37.1 fps median (3 paired 8 s runs). Removing the source is the real fix; 'Pause rotation' only hides the cost.",
+          action: src ? "Disable \"" + src + "\" in " + where + " for the same gain. Use 'Pause rotation' only if you want to keep the look." : "Find the snippet or theme that adds it and disable it; or use 'Pause rotation' as an override.",
+        });
+      }
+    }
+
+    // Measured attribution from the built-in profiler. Generic: whatever the
+    // user recorded becomes the finding, no allow-list of names involved.
+    if (p && p.sources && p.sources.length) {
+      const skip = /^(spotify-core|\(unknown\)|\(anonymous\/eval\)|spicetifyWrapper\.js|perf-adviser\.js)$/;
+      const heavy = p.sources.filter((x) => !skip.test(x.source) && (x.totalMs + (x.forcedMs || 0)) >= 250).slice(0, 3);
+      for (const t of heavy) {
+        const ms = Math.round(t.totalMs + (t.forcedMs || 0));
+        const share = p.recordedMs ? Math.round((100 * ms) / p.recordedMs) : 0;
+        recs.push({
+          severity: share >= 25 ? "high" : "medium",
+          title: "Profile: " + t.source + " used " + ms + " ms",
+          body: ms + " ms in " + t.calls + " callback(s) over " + (p.recordedMs / 1000).toFixed(1) + " s of recording" +
+            (share ? " (~" + share + "% of the window)" : "") + ", longest " + Math.round(t.maxMs) + " ms" +
+            (t.forcedCount ? "; includes " + Math.round(t.forcedMs) + " ms of forced layout reads" : "") + ". This is measured, not a guess.",
+          action: "If you do not need it, disable it in Marketplace and record again to compare.",
+        });
+      }
+    }
+
+    // CSS cost signals, generic. Only the top source and only when the counts are
+    // notable; skip when that same source is already named above.
+    const cssTop = (s.css || []).find((x) => x.score > 0);
+    const coverName = s.coverSource ? s.coverSource.name : "";
+    if (cssTop && cssTop.name !== coverName && (cssTop.has >= 80 || cssTop.blur >= 6 || cssTop.infinite >= 2 || cssTop.chars > 400000)) {
+      recs.push({
+        severity: "info",
+        title: "Heavy CSS signals in " + cssTop.name,
+        body: cssTop.rules + " rules, " + cssTop.has + " :has() selectors, " + cssTop.blur + " blur rule(s), " +
+          Math.round(cssTop.chars / 1024) + " KB of CSS, " + cssTop.infinite + " infinite animation(s). " +
+          "These are counts, not a measured fps cost, but they make style recalc more expensive on every scroll.",
+        action: "If you do not need it, disable it and press 'Measure again' to compare on your own machine.",
       });
     }
 
-    const items = [];
-    if (s.market) {
-      for (const item of [...s.market.extensions, ...s.market.snippets]) {
-        const text = item.key + " " + item.name;
-        for (const known of KNOWN) {
-          if (known.re.test(text)) items.push({ known, item });
-        }
-      }
-    }
-    for (const hit of items) {
-      recs.push({
-        severity: hit.known.severity,
-        title: hit.known.name,
-        body: hit.known.impact,
-        action: hit.known.action,
-      });
-    }
-    return { recs, items };
+    return { recs };
   }
 
   function copyText(text) {
@@ -979,7 +1512,15 @@
     } else {
       lines.push("Marketplace data: unavailable");
     }
-    const { recs } = buildRecommendations(s);
+    if (s.coverSource) lines.push("Cover animation source: " + s.coverSource.name + " (" + s.coverSource.kind + ")");
+    if (s.animations && s.animations.length) {
+      lines.push("Infinite animations: " + s.animations.slice(0, 8).map((a) => a.name + " on " + a.target + " (" + a.state + ")").join(", "));
+    }
+    if (s.css && s.css.length) {
+      lines.push("CSS sources by signal:");
+      s.css.slice(0, 5).forEach((x) => lines.push("  " + x.name + " [" + x.kind + "]: " + x.rules + " rules, " + x.has + " :has(), " + x.blur + " blur, " + x.infinite + " infinite, " + Math.round(x.chars / 1024) + " KB"));
+    }
+    const { recs } = buildRecommendations(s, p);
     lines.push("Findings:");
     recs.forEach((r, i) => lines.push(" " + (i + 1) + ". [" + r.severity + "] " + r.title + " - " + r.body + " " + r.action));
     return lines.join("\n");
@@ -989,7 +1530,7 @@
     if (!last) return;
     const { scan: s, bench: b } = last;
     const p = last.prof || null;
-    const { recs } = buildRecommendations(s);
+    const { recs } = buildRecommendations(s, p);
 
     const root = h("div", "display:flex;flex-direction:column;gap:16px;min-width:min(620px,78vw);max-height:70vh;overflow:auto;padding:4px 2px 8px;");
 
@@ -1017,7 +1558,7 @@
       score.appendChild(metrics);
     }
     const scoreBtns = h("div", "display:flex;gap:8px;margin-left:auto;align-self:center;");
-    scoreBtns.appendChild(btn("Measure again", () => runBench(false), true));
+    scoreBtns.appendChild(btn("Measure again", () => runBench(true), true));
     scoreBtns.appendChild(btn("Copy report", () => copyText(reportText(s, b, p))));
     score.appendChild(scoreBtns);
     root.appendChild(score);
@@ -1028,7 +1569,7 @@
     // findings
     const findings = section("What to change");
     if (!recs.length) {
-      findings.appendChild(h("div", `font-size:13px;color:${C.green};`, "No known offenders detected and the header blur / zoom / CSS-editor checks are clean."));
+      findings.appendChild(h("div", `font-size:13px;color:${C.green};`, "No live offender right now: header blur, zoom, CSS-editor leftovers and infinite animations are clean. Record a profile on a slow page for per-script cost."));
     }
     for (const r of recs) {
       const box = h("div", `display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid rgba(128,128,128,.18);`);
@@ -1053,11 +1594,31 @@
       env.appendChild(h("div", `font-size:12px;color:${C.amber};`, "Marketplace data unavailable (is the Marketplace app loaded?)."));
     }
     env.appendChild(row("Header blur", s.headerBlur.length ? s.headerBlur.length + " active surface(s)" : "none", s.headerBlur.length ? C.red : C.green));
-    env.appendChild(row("Rotating cover", s.coverRotating ? (s.coverPause ? "paused by fix" : "animating") : "not present", s.coverRotating && !s.coverPause ? C.amber : C.green));
+    env.appendChild(row("Rotating cover", s.coverRotating
+      ? (s.coverPause ? "paused by fix" : "animating") + (s.coverSource ? " - from " + s.coverSource.name : "")
+      : "not present", s.coverRotating && !s.coverPause ? C.amber : C.green));
     env.appendChild(row("Injected CSS", s.cssOff ? "disabled" : "active", s.cssOff ? C.amber : C.green));
     env.appendChild(row("CSS editor", s.cssEditorChars == null ? "unknown" : s.cssEditorChars ? s.cssEditorChars + " chars" : "empty", s.cssEditorChars ? C.amber : C.green));
     env.appendChild(row("Page zoom", (s.zoom.level == null ? "unknown" : zoomPct(s.zoom.level)) + " / DPR " + s.zoom.dpr.toFixed(3), s.zoom.level === 0 ? C.green : C.amber));
     root.appendChild(env);
+
+    // Generic CSS inventory: every snippet, the theme and extension <style>
+    // blocks, ranked by expensive signals. Counts only - the profiler gives
+    // measured attribution, so nothing here depends on a name being known.
+    const cssSec = section("Installed CSS (signals)");
+    const cssCard = h("div", `display:flex;flex-direction:column;gap:8px;background:${C.card};border-radius:12px;padding:12px 14px;`);
+    const cssRows = (s.css || []).slice(0, 5).map((x) => [
+      x.name, String(x.rules), String(x.has), String(x.blur), String(x.infinite), Math.round(x.chars / 1024) + " KB",
+    ]);
+    if (cssRows.length) {
+      cssCard.appendChild(miniTable(["source", "rules", ":has()", "blur", "infinite", "size"], cssRows));
+      cssCard.appendChild(h("div", `font-size:11px;color:${C.sub};line-height:1.4;`,
+        "Counts are signals for style-recalc risk, not measured fps. Record a profile on the slow page to attribute real main-thread time."));
+    } else {
+      cssCard.appendChild(h("div", `font-size:12px;color:${C.sub};`, "No snippet, theme or extension CSS found."));
+    }
+    cssSec.appendChild(cssCard);
+    root.appendChild(cssSec);
 
     // fixes
     const fixes = section("Fixes (measured)");
@@ -1068,6 +1629,7 @@
       if (value && state.cssOff) state.cssOff = false;
       saveState(state);
       applyInjectedFixes();
+      syncRuntimePatches();
       notify(message);
       refresh();
     };
@@ -1086,12 +1648,12 @@
       return row;
     };
 
-    const recOn = !s.cssOff && s.headerFix && s.cardPlayFix && s.coverPause;
+    const recOn = !s.cssOff && s.headerFix && s.cardPlayFix;
     const presetRow = h("div", "display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;padding:10px 0;");
     const presetText = h("div", "display:flex;flex-direction:column;gap:3px;flex:1 1 320px;min-width:240px;");
     presetText.appendChild(h("div", `font-size:13px;font-weight:600;color:${C.text};`, "Recommended preset"));
     presetText.appendChild(h("div", `font-size:12px;color:${C.sub};line-height:1.4;`,
-      "Turns on the three fixes that measured a clear win: sticky header, Home card button, rotating cover. Cosmetic theme tweaks are left untouched."));
+      "Turns on the two fixes that measured a clear win: sticky header blur and the Home card button. Rotating cover is opt-in because an installed snippet or theme usually adds it; removing that source is better than overriding it."));
     presetRow.appendChild(presetText);
     if (recOn) {
       presetRow.appendChild(pill("applied", C.green));
@@ -1099,10 +1661,11 @@
       presetRow.appendChild(btn("Apply recommended", () => {
         state.headerFix = true;
         state.cardPlayFix = true;
-        state.coverPause = true;
+        state.runtimePatch = true;
         state.cssOff = false;
         saveState(state);
         applyInjectedFixes();
+        syncRuntimePatches();
         notify("Perf Adviser: recommended fixes applied");
         refresh();
       }, true));
@@ -1115,8 +1678,8 @@
       recommended: true,
       on: !!s.headerFix,
       detail: s.headerFix
-        ? "Backdrop blur removed and replaced with an opaque theme background. Measured +5.8 fps on top of the card fix (66.2 -> 72.0 median)."
-        : "Spotify's blurred sticky header is active. Removing it measured +5.8 fps on top of the card fix (66.2 -> 72.0 median).",
+        ? "Backdrop blur removed and replaced with an opaque theme background. Measured +5.8 fps on top of the card fix."
+        : "Spotify's blurred sticky header is active. Removing it measured +5.8 fps on top of the card fix.",
       action: s.headerFix ? "Restore blur" : "Remove blur",
       onClick: () => setFix("headerFix", !s.headerFix, s.headerFix ? "Perf Adviser: header blur restored" : "Perf Adviser: header blur removed"),
     }));
@@ -1127,22 +1690,25 @@
       recommended: true,
       on: !!s.cardPlayFix,
       detail: s.cardPlayFix
-        ? "Hidden only while scrolling, so its tooltip stops repositioning every frame. Usable at rest; Home only. Measured 27.7 -> 66.2 fps median."
-        : "Spotify repositions this tooltip on every scroll frame while the pointer rests on a card. Measured 27.7 vs 66.2 fps median.",
+        ? "Hidden only while scrolling, so its tooltip stops repositioning every frame. Usable at rest; Home only. Measured +38.5 fps median."
+        : "Spotify repositions this tooltip on every scroll frame while the pointer rests on a card. Measured a +38.5 fps median gain.",
       action: s.cardPlayFix ? "Show button" : "Hide while scrolling",
       onClick: () => setFix("cardPlayFix", !s.cardPlayFix, s.cardPlayFix ? "Perf Adviser: play button always shown" : "Perf Adviser: play button hidden while scrolling"),
     }));
 
-    // 3. rotating cover art
+    // 3. rotating cover art (opt-in; usually added by an installed snippet/theme)
+    const coverSrcName = s.coverSource ? s.coverSource.name : "";
+    const coverWhere = s.coverSource && s.coverSource.kind === "theme" ? "Marketplace > Themes" : "Marketplace > Snippets";
     fixCard.appendChild(addToggle({
-      title: "Rotating cover art",
-      recommended: true,
+      title: "Rotating cover art (opt-in)",
       on: !!s.coverPause,
       detail: s.coverPause
-        ? "Decorative .cover-art rotation paused; the circular crop is kept. Measured 85.9 -> 123.0 fps median on Home."
+        ? "Paused by this extension. " + (coverSrcName ? coverSrcName + " adds the rotation; disabling it is the cleaner fix." : "Disabling the snippet/theme that adds the rotation is the cleaner fix.")
         : (s.coverRotating
-          ? "A rotation is running on .cover-art, which Chromium cannot composite because of its clip-path. Pausing it measured 85.9 -> 123.0 fps median."
-          : "No rotating cover animation detected right now. Leaving this on is harmless."),
+          ? (coverSrcName
+            ? coverSrcName + " rotates .cover-art. Disabling it in " + coverWhere + " removes the cost at the source. Pausing here is only an override; measured +37.1 fps median."
+            : "An installed snippet/theme rotates .cover-art. Disabling it is the cleaner fix; pausing here measured +37.1 fps median.")
+          : "No rotating cover animation detected right now, so this toggle would do nothing."),
       action: s.coverPause ? "Resume rotation" : "Pause rotation",
       onClick: () => setFix("coverPause", !s.coverPause, s.coverPause ? "Perf Adviser: cover rotation resumed" : "Perf Adviser: cover rotation paused"),
     }));
@@ -1187,6 +1753,7 @@
         state.cssOff = false;
         saveState(state);
         applyInjectedFixes();
+        syncRuntimePatches();
         notify("Perf Adviser: fixes enabled");
         refresh();
       }, true));
@@ -1195,6 +1762,7 @@
         state.cssOff = true;
         saveState(state);
         applyInjectedFixes();
+        syncRuntimePatches();
         notify("Perf Adviser: all fixes disabled");
         refresh();
       }));
@@ -1202,6 +1770,39 @@
     fixCard.appendChild(killRow);
     fixes.appendChild(fixCard);
     root.appendChild(fixes);
+
+    // runtime CSS patches (separate: they do not inject any CSS rule)
+    const rt = s.runtime || { active: false, parked: 0, live: 0, mirrored: 0 };
+    const rtSec = section("Runtime CSS patches");
+    const rtCard = h("div", `display:flex;flex-direction:column;gap:0;background:${C.card};border-radius:12px;padding:4px 14px;`);
+    const rtRow = h("div", "display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;padding:10px 0;");
+    const rtText = h("div", "display:flex;flex-direction:column;gap:3px;flex:1 1 320px;min-width:240px;");
+    const rtTitle = h("div", "display:flex;align-items:center;gap:8px;flex-wrap:wrap;");
+    rtTitle.appendChild(h("div", `font-size:13px;color:${C.text};`, "Park idle :has() rules"));
+    rtTitle.appendChild(pill(rt.active ? "on" : "off", rt.active ? C.green : C.sub));
+    rtTitle.appendChild(pill(rt.parked + " parked", rt.parked ? C.green : C.sub));
+    if (rt.mirrored) rtTitle.appendChild(pill(rt.mirrored + " mirrored", C.blue));
+    rtText.appendChild(rtTitle);
+    rtText.appendChild(h("div", `font-size:12px;color:${C.sub};line-height:1.4;`,
+      "Chromium treats any live :has() rule as document-wide, so one tooltip can restyle the whole app. " +
+      "This parks rules that currently match nothing and restores each one when its target appears; " +
+      "the two global :has() anchors installed by track-peek are mirrored with a class instead. " +
+      "Measured on the installed build: one top-bar hover 118-160 ms -> 83-93 ms of style recalc " +
+      "(restyles over 20 ms: 2 -> 0); card hover worst frame ~49 ms -> 7 ms. " +
+      (rt.live ? rt.live + " :has() rule(s) are in use and untouched." : "")));
+    rtRow.appendChild(rtText);
+    rtRow.appendChild(btn(rt.active ? "Turn off" : "Turn on", () => {
+      state.runtimePatch = !state.runtimePatch;
+      if (state.runtimePatch && state.cssOff) state.cssOff = false;
+      saveState(state);
+      applyInjectedFixes();
+      syncRuntimePatches();
+      notify(state.runtimePatch ? "Perf Adviser: runtime CSS patches on" : "Perf Adviser: runtime CSS patches off");
+      refresh();
+    }, !rt.active));
+    rtCard.appendChild(rtRow);
+    rtSec.appendChild(rtCard);
+    root.appendChild(rtSec);
 
     // profiler
     const profile = section("Profile (merged from Perf Tools)");
@@ -1263,6 +1864,7 @@
       "It runs with this panel closed, does one unmeasured warm-up scroll first, and acknowledges that Home FPS depends on where the mouse rests. " +
       "The profiler wraps timers, animation frames, event listeners and MutationObservers only while recording, then restores them. " +
       "When idle the extension runs no timers, observers or animation frames - just three passive scroll listeners. " +
+      "The CSS/animation inventory is read only when the panel is built, never on a timer. " +
       "Uninstall: run \"spicetify config extensions perf-adviser.js-\" then \"spicetify apply -n\" (or delete perf-adviser.js from %APPDATA%\\spicetify\\Extensions and remove it from config-xpui.ini)."
     ));
     root.appendChild(foot);
@@ -1361,16 +1963,32 @@
         Object.assign(state, patch || {});
         saveState(state);
         applyInjectedFixes();
+        syncRuntimePatches();
         return Object.assign({}, state);
       },
+      patchInfo: () => ({
+        active: patchesActive(),
+        parked: runtime.parked.length,
+        live: runtime.live,
+        mirrored: runtime.mirrored,
+        scans: runtime.scans,
+        revives: runtime.revives,
+        liveOriginals: runtime.parked
+          .filter((p) => { try { return p.rule && p.rule.parentStyleSheet && p.rule.selectorText === p.original; } catch (e) { return false; } })
+          .map((p) => p.original.slice(0, 100))
+          .slice(0, 10),
+        preconditions: runtime.precond,
+      }),
       removeFixes() {
         state.headerFix = false;
         state.cardPlayFix = false;
         state.coverPause = false;
         state.themeTweaks = false;
+        state.runtimePatch = false;
         state.cssOff = true;
         saveState(state);
         applyInjectedFixes();
+        syncRuntimePatches();
       },
     };
   })();

@@ -1,7 +1,7 @@
 [
   {
     "name": "Performance Adviser",
-    "description": "Measure and fix the biggest Spicetify UI slowdowns: sticky-header blur, Home card tooltip churn, and a slow rotating cover. Includes a built-in profiler.",
+    "description": "Measure and fix the biggest Spicetify UI slowdowns: sticky-header blur, Home card tooltip churn, idle :has() rules that restyle the app on every hover, and heavy theme/snippet CSS. Includes a profiler.",
     "preview": "preview.png",
     "main": "perf-adviser.js",
     "readme": "README.md",
