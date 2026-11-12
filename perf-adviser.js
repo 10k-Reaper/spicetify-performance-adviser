@@ -50,6 +50,19 @@
   const STATE_KEY = "perf-adviser:state";
   const FIX_ID = "perf-adviser-fixes";
   const SCROLL_CLASS = "perf-adviser-scrolling";
+  const PANEL_ID = "perf-adviser-panel-style";
+  const PANEL_MODAL = "perf-adviser-modal";
+
+  // The panel uses Spotify's PopupModal, whose surface is translucent
+  // (rgba(...,.7) plus a backdrop blur in Lucid). While our panel is open we
+  // give both modal layers an opaque version of that same theme colour, so text
+  // stays readable over any page behind it. Scoped to our own modal only.
+  const PANEL_CSS = `
+.${PANEL_MODAL} {
+  background-color: var(--perf-adviser-surface, #121212) !important;
+  backdrop-filter: none !important;
+}
+`;
 
   // ---------------------------------------------------------------- CSS blocks
   // Each fix is a separate block so it can be measured and disabled on its own.
@@ -178,6 +191,61 @@
     document.documentElement.classList.remove(SCROLL_CLASS);
   }
   applyInjectedFixes();
+
+  // ------------------------------------------------------- panel surface
+  // Spotify's PopupModal surface is translucent (rgba(...,.7) + a 32 px blur in
+  // Lucid). Reuse its own colour at full alpha so the panel matches the theme
+  // but stays readable over whatever page is behind it. Scoped to our modal.
+  function ensurePanelStyle() {
+    if (document.getElementById(PANEL_ID)) return;
+    const el = document.createElement("style");
+    el.id = PANEL_ID;
+    el.textContent = PANEL_CSS;
+    (document.head || document.documentElement).appendChild(el);
+  }
+
+  // Opaque version of whatever surface colour the theme gives this modal.
+  function surfaceColor(modal) {
+    const cs = getComputedStyle(modal);
+    const trip = (cs.getPropertyValue("--clr-surface-rgb") || "").trim();
+    if (/^\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}$/.test(trip)) return "rgb(" + trip + ")";
+    const parse = (v) => {
+      const m = /rgba?\(([^)]+)\)/.exec(v || "");
+      if (!m) return null;
+      const p = m[1].split(",").map((x) => parseFloat(x));
+      if (p.length < 3 || (p.length > 3 && p[3] < 0.01)) return null;
+      return "rgb(" + Math.round(p[0]) + "," + Math.round(p[1]) + "," + Math.round(p[2]) + ")";
+    };
+    return parse(cs.backgroundColor) ||
+      parse(cs.getPropertyValue("--spice-main")) ||
+      parse(cs.getPropertyValue("--spice-card")) ||
+      "#121212";
+  }
+
+  function skinModal(attempt) {
+    const nodes = document.querySelectorAll(".GenericModal.spicetify-popup");
+    const modal = nodes[nodes.length - 1];
+    // PopupModal may mount a tick after display() returns; wait for our content.
+    if (!modal || !(modal.textContent || "").includes("Runtime CSS patches")) {
+      if ((attempt || 0) < 10) setTimeout(() => skinModal((attempt || 0) + 1), 60);
+      return;
+    }
+    ensurePanelStyle();
+    for (const el of document.querySelectorAll("." + PANEL_MODAL)) el.classList.remove(PANEL_MODAL);
+    const color = surfaceColor(modal);
+    modal.style.setProperty("--perf-adviser-surface", color);
+    modal.classList.add(PANEL_MODAL);
+    // The theme sets its translucent surface with a higher-specificity
+    // !important :has() rule, so an inline !important declaration is needed.
+    modal.style.setProperty("background-color", color, "important");
+    modal.style.setProperty("backdrop-filter", "none", "important");
+    const inner = modal.querySelector(".spicetify-popup-container");
+    if (inner) {
+      inner.style.setProperty("background-color", color, "important");
+      inner.style.setProperty("backdrop-filter", "none", "important");
+      inner.classList.add(PANEL_MODAL);
+    }
+  }
 
   // ------------------------------------------------------- runtime CSS patches
   // Chromium's :has() invalidation is document-wide: while any live :has() rule
@@ -1870,6 +1938,7 @@
     root.appendChild(foot);
 
     Spicetify.PopupModal.display({ title: "Performance Adviser", content: root, isLarge: true });
+    skinModal();
   }
 
   async function refresh() {
