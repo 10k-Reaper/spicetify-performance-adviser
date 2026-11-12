@@ -1,0 +1,13 @@
+[
+  {
+    "name": "Performance Adviser",
+    "description": "Measure and fix the biggest Spicetify UI slowdowns: sticky-header blur, Home card tooltip churn, and a slow rotating cover. Includes a built-in profiler.",
+    "preview": "preview.png",
+    "main": "perf-adviser.js",
+    "readme": "README.md",
+    "authors": [
+      { "name": "10k-Reaper", "url": "https://github.com/10k-Reaper" }
+    ],
+    "tags": ["performance", "fps", "profiler", "optimization"]
+  }
+]
