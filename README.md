@@ -8,6 +8,8 @@ A single-file Spicetify extension that measures your Spotify UI's scroll perform
 
 It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and the panel shows the before/after number it measured for that toggle.
 
+**On Home, the recommended preset measured 27.7 → 72.0 fps** (one machine, synthetic scroll — see [Results](#results)). If scrolling your Home page stutters, that is the case this extension targets.
+
 ## Features
 
 - **Two independent, recommended fixes**
