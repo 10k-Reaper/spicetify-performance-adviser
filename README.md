@@ -4,6 +4,8 @@ A single-file Spicetify extension that measures your Spotify UI's scroll perform
 
 ![Performance Adviser panel](preview.png)
 
+![Release downloads](https://img.shields.io/github/downloads/10k-Reaper/spicetify-performance-adviser/total?label=release%20downloads)
+
 It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and the panel shows the before/after number it measured for that toggle.
 
 ## Features
@@ -31,7 +33,7 @@ It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and
 
 ### Manually
 
-1. Download `perf-adviser.js` from this repository.
+1. Download [`perf-adviser.js`](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/download/v1.0.0/perf-adviser.js) from the [v1.0.0 release](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/tag/v1.0.0) (or `gh release download v1.0.0 -R 10k-Reaper/spicetify-performance-adviser`).
 2. Copy it into your Spicetify extensions folder:
    - Windows: `%APPDATA%\spicetify\Extensions\`
    - Linux/macOS: `~/.config/spicetify/Extensions/`
@@ -44,6 +46,8 @@ It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and
 
    The command appends `perf-adviser.js` to the list, or creates the line if none exists. Extension order does not matter here: its CSS uses `!important` and the patch engine rescans every loaded stylesheet.
 4. Restart Spotify.
+
+> The badge at the top counts **release-asset downloads only**: people who fetch `perf-adviser.js` directly. Marketplace installs are served through jsDelivr, so GitHub never sees them. Read it as a manual-download count, not an install count.
 
 ## Usage
 
