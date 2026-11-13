@@ -42,29 +42,76 @@ What the table means:
 A separate paired test with the card fix already on measured **+37.1 fps**
 (median) when the rotating cover was paused.
 
-## Top-bar hover and idle `:has()` rules
+## Hover cost and idle `:has()` rules
 
-Hovering a top-bar icon mounts a tooltip. In this setup, while many `:has()`
-rules were live, a single hover restyled thousands of elements; with the rules
-that matched nothing parked, that work dropped. Three rounds on the installed
-build, runtime patch off vs on, same session:
+Hover numbers are easy to misattribute. If the pointer enters a control from a
+different region - the player bar, another shelf - Chromium first clears that
+region's hover state and restyles the page. The result then describes the
+region change, not the control. The protocol here parks the pointer at a
+nearby non-interactive point outside the target, waits, then enters. Each row
+is a median of three rounds in one session, runtime patch on vs off, with the
+**Made for you** shelf in view.
 
-| Runtime patch | Style recalc, one hover | Worst frame, card hover | Restyles >20 ms | 4 s top-bar icon sweep |
+| Target | Runtime patch on | Runtime patch off |
+|---|---|---|
+| **Made for you** card title | 378 elements, ~80 ms | 951 elements, ~195 ms |
+| Player bar play/pause | 381 elements, ~80 ms | 938 elements, ~162 ms |
+| Top-bar icon | 7 elements, ~49 ms | 7 elements, ~68 ms |
+| Home filter chip | 4 elements, ~63 ms | 4 elements, ~64 ms |
+| Shelf heading | 3 elements, ~60 ms | 3 elements, ~61 ms |
+| "Show all" | 3 elements, ~49 ms | 3 elements, ~65 ms |
+
+"Elements" is the largest style recalculation in the hover trace and is the
+stable column. The millisecond figure is all style time in the same window and
+moves with Spotify's cover animations, so compare it only within a row. The
+whole table is one page and one session; a quieter or busier Home changes the
+counts a little.
+
+What this means:
+
+- A top-bar icon, a filter chip, a shelf heading and **Show all** were never
+  the problem: their hovers restyle 3-7 elements.
+- The expensive hovers are the wide card box and the player bar. Parking idle
+  `:has()` rules cuts their restyle scope by about 2.5x (951 -> 378 and
+  938 -> 381). It does **not** remove the hitch: entering a card still runs one
+  main-thread task over 40 ms (~50 ms in the profile) and a ~40 ms layout
+  pass, with the patch on or off. The extension's own script time in these
+  traces is 0.2-2 ms.
+- The trigger is the card box, not the title text. Entering the title and
+  entering a blank part of the same card produce the same ~377-element restyle
+  and the same task, so moving the hover effect to a narrower target does not
+  help.
+
+A realistic sweep across three card titles and the shelf heading (two rounds
+per sweep, ~206 frames) still shows the residual:
+
+| Runtime patch | p95 frame | Worst frame | Frames >33 ms | Frames >50 ms |
 |---|---|---|---|---|
-| Off | 118-160 ms (median 134) | 7.1-7.2 ms in 2 rounds, ~49 ms in 1 | 2 | 563-649 ms, 9-10 big |
-| On | 83-93 ms (median 90) | 7.1-7.2 ms in all 3 | 0 | 367-421 ms, 0 big |
+| On | 27.7-34.7 ms | 76-90 ms | 6-13 | 6 |
+| Off | 55.5 ms | 118 ms | 17-20 | 8-10 |
 
-A hover on a **Made for you** card behaved the same way: p95 frame time was 7 ms
-in every round, but without the patch the worst frame hit ~49 ms in one of three
-rounds; with it, the worst frame stayed at 7 ms in all three. The patch left the
-11-12 `:has()` rules that were genuinely in use untouched, including the
-empty-search-field rule.
+The patch roughly halves the number of slow frames, but it cannot make a card
+enter smooth, because the remaining cost is Spotify's own card-hover
+re-render. Nine CSS-only candidates were measured and rejected: rewriting
+`:hover > *` (five variants), parking all 141 hover-combinator rules,
+containment on the shelf/grid/card/tippy roots, `content-visibility` on cards,
+blocking the cover videos, and pausing the rotating-cover animation. None
+changed the frames or the task.
 
-The hover table is not a scroll measurement: style recalc and element counts
-come from a single tooltip hover, the 4 s sweep is a synthetic pointer sweep
-across four top-bar icons, and the worst-frame column comes from holding the
-pointer on one card. All are paired in the same session; the absolute element
-counts vary with how much of Home has loaded.
+With the patch on, 160-162 idle `:has()` rules are parked and 11-12 stay live
+because they currently match, including the empty-search-field rule. The
+engine's scans settle at 11-12 in the first ~10 s and then stay flat. The
+track-peek mirror rewrites its two global anchors to classes; it was verified
+by selector inspection, not end to end, because track-peek itself was failing
+in that session (see the report).
+
+**Retraction.** Earlier versions of this page reported 118-160 ms of style
+recalc for one top-bar hover, falling to 83-93 ms with the patch, a
+1,050-1,100-element restyle, and a 4 s top-bar sweep of 563-649 ms. Those
+figures came from starting the pointer on the player bar; they measured the
+region change, not the icon, and are retracted. The earlier "card hover worst
+frame ~49 ms, 7 ms with the patch" claim is retracted too: with the corrected
+protocol the card hitch is still there with the patch on.
 
 ## Idle overhead
 
