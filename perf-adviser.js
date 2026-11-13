@@ -12,10 +12,11 @@
 //   - one optional cosmetic bundle (marketplace card border, active-button
 //     colour, 72 px player bar) - not a performance fix, off by default
 //   - runtime CSS patches: Chromium treats every live :has() rule as a
-//     document-wide invalidation source, so one tooltip opening can restyle
-//     thousands of elements. The patch engine mirrors the two global :has()
-//     anchors installed by track-peek and parks :has() rules that currently
-//     match nothing, restoring each one as soon as its target appears.
+//     document-wide invalidation source, so a hover can restyle more of the
+//     page than the control under the cursor. The patch engine mirrors the two
+//     global :has() anchors installed by track-peek and parks :has() rules that
+//     currently match nothing, restoring each one as soon as its target appears.
+//     It narrows that work but cannot remove Spotify's own card re-render.
 //   - scans the live environment generically: installed Marketplace
 //     extensions/snippets/theme, every CSS source (rule counts, :has(), blur,
 //     infinite animations), running animations and their source, header blur,
@@ -249,7 +250,8 @@
 
   // ------------------------------------------------------- runtime CSS patches
   // Chromium's :has() invalidation is document-wide: while any live :has() rule
-  // exists, opening one tooltip can restyle thousands of elements. Two patches:
+  // exists, a hover can restyle more of the page than the hovered control. Two
+  // patches:
   //
   //   1. track-peek's stylesheet starts selectors with :has(), so they can
   //      match any element in the document. Mirror those conditions with
@@ -258,11 +260,11 @@
   //      (selector replaced with an inert one). It is restored as soon as
   //      something it targets appears. Rules that are in use are never touched.
   //
-  // Measured on the installed build (3 rounds): one top-bar hover costs
-  // 118-160 ms of style recalc over ~1,050-1,100 elements -> 83-93 ms over ~450
-  // (median 134 -> 90); restyles over 20 ms: 2 -> 0. A 4 s icon sweep:
-  // 563-649 ms and 9-10 big restyles -> 367-421 ms and 0. Card hover worst
-  // frame hit ~49 ms in 1 of 3 rounds without the patch; 7 ms in all 3 with it.
+  // Measured on the installed build (3 rounds, pointer parked outside the
+  // target): a wide card hover restyles 951 elements -> 378 with the patch; the
+  // player bar 938 -> 381; a top-bar icon is 7 either way. The card still runs
+  // one ~50 ms React task and a ~40 ms layout pass with the patch on. That is
+  // Spotify's own re-render, not :has() and not this extension.
   const PARK_PREFIX = "perf-adviser-parked-";
   const PEEK_WRAP = "perf-adviser-peek-wrap";
   const PEEK_ANCHOR = "perf-adviser-peek-anchor";
@@ -1469,9 +1471,9 @@
     if (!s.runtime || (s.runtime.active === false && hasRules >= 10)) {
       recs.push({
         severity: "medium",
-        title: "Idle :has() CSS rules make every hover restyle the app",
+        title: "Idle :has() CSS rules widen card and player hovers",
         body: "Chromium treats any live :has() rule as document-wide, even one that matches nothing. " + hasRules +
-          " :has() selectors are loaded; without the runtime patch, one top-bar tooltip costs 118-160 ms of style recalculation across ~1,050 elements and up to a ~49 ms frame.",
+          " :has() selectors are loaded; with them live, hovering a wide Home card restyles 951 elements instead of 378. Parking the idle ones cuts that work, but Spotify's own card re-render still costs a frame.",
         action: "Turn on 'Runtime CSS patches' below. It only parks rules that match nothing and restores each one when its target appears.",
       });
     }
@@ -1852,11 +1854,11 @@
     if (rt.mirrored) rtTitle.appendChild(pill(rt.mirrored + " mirrored", C.blue));
     rtText.appendChild(rtTitle);
     rtText.appendChild(h("div", `font-size:12px;color:${C.sub};line-height:1.4;`,
-      "Chromium treats any live :has() rule as document-wide, so one tooltip can restyle the whole app. " +
-      "This parks rules that currently match nothing and restores each one when its target appears; " +
-      "the two global :has() anchors installed by track-peek are mirrored with a class instead. " +
-      "Measured on the installed build: one top-bar hover 118-160 ms -> 83-93 ms of style recalc " +
-      "(restyles over 20 ms: 2 -> 0); card hover worst frame ~49 ms -> 7 ms. " +
+      "Chromium treats any live :has() rule as document-wide, so a hover can restyle more than the hovered control. " +
+      "This parks rules that match nothing and restores each when its target appears; " +
+      "track-peek's two global :has() anchors are mirrored with a class. " +
+      "Measured: a wide card hover restyles 951 elements with the rules live and 378 parked; the player bar 938 -> 381. " +
+      "Spotify's own card re-render is not removed. " +
       (rt.live ? rt.live + " :has() rule(s) are in use and untouched." : "")));
     rtRow.appendChild(rtText);
     rtRow.appendChild(btn(rt.active ? "Turn off" : "Turn on", () => {
