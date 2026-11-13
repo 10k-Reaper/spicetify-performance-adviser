@@ -33,7 +33,7 @@ It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and
 
 ### Manually
 
-1. Download [`perf-adviser.js`](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/download/v1.0.0/perf-adviser.js) from the [v1.0.0 release](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/tag/v1.0.0) (or `gh release download v1.0.0 -R 10k-Reaper/spicetify-performance-adviser`).
+1. Download [`perf-adviser.js`](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/download/v1.0.1/perf-adviser.js) from the [v1.0.1 release](https://github.com/10k-Reaper/spicetify-performance-adviser/releases/tag/v1.0.1) (or `gh release download v1.0.1 -R 10k-Reaper/spicetify-performance-adviser`).
 2. Copy it into your Spicetify extensions folder:
    - Windows: `%APPDATA%\spicetify\Extensions\`
    - Linux/macOS: `~/.config/spicetify/Extensions/`
@@ -84,7 +84,7 @@ Full tables and caveats - scroll, hover/`:has()`, idle overhead - are in [docs/M
 | Component | Tested |
 |---|---|
 | Spotify | 1.3.8.620 (Chromium 151), 1.3.7.2752 |
-| Spicetify | 2.46.4 |
+| Spicetify | 2.46.4, 2.46.7 |
 | OS | Windows 11 |
 | Marketplace | Extensions tab, install and remove |
 

@@ -47,7 +47,7 @@
   "use strict";
   if (window.__perfAdviser) return;
 
-  const VERSION = "1.0.0";
+  const VERSION = "1.0.1";
   const STATE_KEY = "perf-adviser:state";
   const FIX_ID = "perf-adviser-fixes";
   const SCROLL_CLASS = "perf-adviser-scrolling";
