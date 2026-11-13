@@ -51,6 +51,8 @@ It does not rewrite Spotify's own JavaScript. Each fix is a separate toggle, and
 
 > The badge at the top counts **release-asset downloads only**: people who fetch `perf-adviser.js` directly. Marketplace installs are served through jsDelivr, so GitHub never sees them. Read it as a manual-download count, not an install count.
 
+> Installing by hand works exactly like a Marketplace install, with one difference: Marketplace only lists extensions **it** installed. A manual install runs normally but does not appear under **Installed**, and Marketplace will not offer to remove or update it. Use the Marketplace route above if you want it in that list.
+
 ## Usage
 
 1. Click the **Perf Adviser** icon in the top bar (the clock badge).
